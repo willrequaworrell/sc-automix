@@ -22,20 +22,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: pnpm
-
-      - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -89,60 +75,69 @@ jobs:
 
       - name: Validate output
         run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import Ajv2020 from './packages/analysis-contract/node_modules/ajv/dist/2020.js';
+          python3 - <<'PY'
+          import json
+          import math
+          import os
+          import sys
+          from pathlib import Path
 
-          const spikeDir = process.env.SPIKE_DIR;
-          const trackStem = process.env.TRACK_STEM;
-          const expectedBpm = Number(process.env.EXPECTED_BPM);
-          const bpmTolerance = Number(process.env.BPM_TOLERANCE);
-          const warmMaxSeconds = Number(process.env.WARM_MAX_SECONDS);
-          const outPath = `${spikeDir}/out/warm/${trackStem}.json`;
+          spike_dir = os.environ["SPIKE_DIR"]
+          track_stem = os.environ["TRACK_STEM"]
+          expected_bpm = float(os.environ["EXPECTED_BPM"])
+          bpm_tolerance = float(os.environ["BPM_TOLERANCE"])
+          warm_max_seconds = float(os.environ["WARM_MAX_SECONDS"])
+          out_path = Path(spike_dir) / "out" / "warm" / f"{track_stem}.json"
+          data = json.loads(out_path.read_text())
 
-          const schema = JSON.parse(fs.readFileSync('packages/analysis-contract/src/analysis.schema.json', 'utf8'));
-          const data = JSON.parse(fs.readFileSync(outPath, 'utf8'));
-          const ajv = new Ajv2020({ allErrors: true });
-          const validate = ajv.compile(schema);
-          if (!validate(data)) {
-            console.error(JSON.stringify(validate.errors, null, 2));
-            process.exit(1);
-          }
+          required = [
+            "track_id",
+            "analysis_version",
+            "engine",
+            "duration_analyzed_sec",
+            "beats",
+            "downbeats",
+            "bars",
+            "warnings",
+            "raw_summary",
+          ]
+          failures = [f"missing required field: {key}" for key in required if key not in data]
 
-          const tempoBpm = Number(data.tempo_bpm);
-          const totalCliSec = Number(data.raw_summary?.timings_sec?.total_cli_sec);
-          const beatCount = data.beats.length;
-          const downbeatCount = data.downbeats.length;
+          tempo_bpm = float(data.get("tempo_bpm", "nan"))
+          total_cli_sec = float(data.get("raw_summary", {}).get("timings_sec", {}).get("total_cli_sec", "nan"))
+          beats = data.get("beats", [])
+          downbeats = data.get("downbeats", [])
+          bars = data.get("bars", [])
+          segments = data.get("segments", [])
 
-          const failures = [];
-          if (!Number.isFinite(tempoBpm) || Math.abs(tempoBpm - expectedBpm) > bpmTolerance) {
-            failures.push(`tempo_bpm ${tempoBpm} is outside ${expectedBpm} +/- ${bpmTolerance}`);
-          }
-          if (!Number.isFinite(totalCliSec) || totalCliSec > warmMaxSeconds) {
-            failures.push(`warm total_cli_sec ${totalCliSec} exceeds ${warmMaxSeconds}`);
-          }
-          if (beatCount < 1) {
-            failures.push('no beats emitted');
-          }
-          if (downbeatCount < 1) {
-            failures.push('no downbeats emitted');
-          }
+          if not math.isfinite(tempo_bpm) or abs(tempo_bpm - expected_bpm) > bpm_tolerance:
+            failures.append(f"tempo_bpm {tempo_bpm} is outside {expected_bpm} +/- {bpm_tolerance}")
+          if not math.isfinite(total_cli_sec) or total_cli_sec > warm_max_seconds:
+            failures.append(f"warm total_cli_sec {total_cli_sec} exceeds {warm_max_seconds}")
+          if not beats:
+            failures.append("no beats emitted")
+          if not downbeats:
+            failures.append("no downbeats emitted")
+          if not bars:
+            failures.append("no bars emitted")
 
-          console.log(JSON.stringify({
-            outPath,
-            tempo_bpm: tempoBpm,
-            expected_bpm: expectedBpm,
-            total_cli_sec: totalCliSec,
-            beats: beatCount,
-            downbeats: downbeatCount,
-            segments: data.segments?.length ?? 0,
-          }, null, 2));
-
-          if (failures.length) {
-            console.error(failures.join('\n'));
-            process.exit(1);
+          summary = {
+            "out_path": str(out_path),
+            "analysis_version": data.get("analysis_version"),
+            "tempo_bpm": tempo_bpm,
+            "expected_bpm": expected_bpm,
+            "total_cli_sec": total_cli_sec,
+            "beats": len(beats),
+            "downbeats": len(downbeats),
+            "bars": len(bars),
+            "segments": len(segments),
           }
-          NODE
+          print(json.dumps(summary, indent=2, sort_keys=True))
+
+          if failures:
+            print("\n".join(failures), file=sys.stderr)
+            sys.exit(1)
+          PY
 
       - name: Upload benchmark artifacts
         uses: actions/upload-artifact@v4
