@@ -1,0 +1,151 @@
+name: allin1 CPU no-demix benchmark
+
+on:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    name: Linux CPU no-demix
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      SPIKE_DIR: spikes/allin1-docker-cpu-no-demix
+      IMAGE_NAME: sc-allin1-cpu-no-demix:ci
+      TRACK_NAME: In-Search-Of-Sunset-126bpm-1000-Handz.mp3
+      TRACK_STEM: In-Search-Of-Sunset-126bpm-1000-Handz
+      EXPECTED_BPM: "130"
+      BPM_TOLERANCE: "1"
+      WARM_MAX_SECONDS: "180"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build benchmark image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.SPIKE_DIR }}
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE_NAME }}
+          load: true
+          cache-from: type=gha,scope=allin1-cpu-no-demix
+          cache-to: type=gha,scope=allin1-cpu-no-demix,mode=max
+
+      - name: Run cold benchmark
+        run: |
+          mkdir -p "$SPIKE_DIR/out/cold" "$SPIKE_DIR/cache"
+          docker run --rm --platform linux/amd64 \
+            --cpus=4 \
+            -e CUDA_VISIBLE_DEVICES="" \
+            -e XDG_CACHE_HOME=/cache/xdg \
+            -e TORCH_HOME=/cache/torch \
+            -e HF_HOME=/cache/huggingface \
+            -e MPLCONFIGDIR=/cache/matplotlib \
+            -v "$PWD/$SPIKE_DIR/fixtures:/input:ro" \
+            -v "$PWD/$SPIKE_DIR/out/cold:/output" \
+            -v "$PWD/$SPIKE_DIR/cache:/cache" \
+            "$IMAGE_NAME" \
+            "/input/$TRACK_NAME" \
+            --output-dir /output \
+            --cache-dir /cache/huggingface \
+            --timings-path /output/timings.jsonl
+
+      - name: Run warm benchmark
+        run: |
+          mkdir -p "$SPIKE_DIR/out/warm"
+          docker run --rm --platform linux/amd64 \
+            --cpus=4 \
+            -e CUDA_VISIBLE_DEVICES="" \
+            -e XDG_CACHE_HOME=/cache/xdg \
+            -e TORCH_HOME=/cache/torch \
+            -e HF_HOME=/cache/huggingface \
+            -e MPLCONFIGDIR=/cache/matplotlib \
+            -v "$PWD/$SPIKE_DIR/fixtures:/input:ro" \
+            -v "$PWD/$SPIKE_DIR/out/warm:/output" \
+            -v "$PWD/$SPIKE_DIR/cache:/cache" \
+            "$IMAGE_NAME" \
+            "/input/$TRACK_NAME" \
+            --output-dir /output \
+            --cache-dir /cache/huggingface \
+            --timings-path /output/timings.jsonl
+
+      - name: Validate output
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import Ajv2020 from './packages/analysis-contract/node_modules/ajv/dist/2020.js';
+
+          const spikeDir = process.env.SPIKE_DIR;
+          const trackStem = process.env.TRACK_STEM;
+          const expectedBpm = Number(process.env.EXPECTED_BPM);
+          const bpmTolerance = Number(process.env.BPM_TOLERANCE);
+          const warmMaxSeconds = Number(process.env.WARM_MAX_SECONDS);
+          const outPath = `${spikeDir}/out/warm/${trackStem}.json`;
+
+          const schema = JSON.parse(fs.readFileSync('packages/analysis-contract/src/analysis.schema.json', 'utf8'));
+          const data = JSON.parse(fs.readFileSync(outPath, 'utf8'));
+          const ajv = new Ajv2020({ allErrors: true });
+          const validate = ajv.compile(schema);
+          if (!validate(data)) {
+            console.error(JSON.stringify(validate.errors, null, 2));
+            process.exit(1);
+          }
+
+          const tempoBpm = Number(data.tempo_bpm);
+          const totalCliSec = Number(data.raw_summary?.timings_sec?.total_cli_sec);
+          const beatCount = data.beats.length;
+          const downbeatCount = data.downbeats.length;
+
+          const failures = [];
+          if (!Number.isFinite(tempoBpm) || Math.abs(tempoBpm - expectedBpm) > bpmTolerance) {
+            failures.push(`tempo_bpm ${tempoBpm} is outside ${expectedBpm} +/- ${bpmTolerance}`);
+          }
+          if (!Number.isFinite(totalCliSec) || totalCliSec > warmMaxSeconds) {
+            failures.push(`warm total_cli_sec ${totalCliSec} exceeds ${warmMaxSeconds}`);
+          }
+          if (beatCount < 1) {
+            failures.push('no beats emitted');
+          }
+          if (downbeatCount < 1) {
+            failures.push('no downbeats emitted');
+          }
+
+          console.log(JSON.stringify({
+            outPath,
+            tempo_bpm: tempoBpm,
+            expected_bpm: expectedBpm,
+            total_cli_sec: totalCliSec,
+            beats: beatCount,
+            downbeats: downbeatCount,
+            segments: data.segments?.length ?? 0,
+          }, null, 2));
+
+          if (failures.length) {
+            console.error(failures.join('\n'));
+            process.exit(1);
+          }
+          NODE
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: allin1-cpu-no-demix-benchmark
+          path: |
+            ${{ env.SPIKE_DIR }}/out/**/*.json
+            ${{ env.SPIKE_DIR }}/out/**/*.jsonl
