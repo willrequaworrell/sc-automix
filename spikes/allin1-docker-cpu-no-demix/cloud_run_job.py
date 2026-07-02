@@ -69,6 +69,8 @@ def main() -> int:
     input_name = Path(parse_gs_uri(input_uri)[1]).name
     local_input = temp_root / "input" / input_name
     local_output_dir = temp_root / "output"
+    local_work_dir = temp_root / "work"
+    local_work_dir.mkdir(parents=True, exist_ok=True)
 
     timings["download_sec"] = download_blob(client, input_uri, local_input)
 
@@ -81,7 +83,7 @@ def main() -> int:
       "--cache-dir",
       str(cache_dir),
       "--work-dir",
-      str(temp_root / "work"),
+      str(local_work_dir),
       "--model",
       model,
       "--timings-path",
