@@ -84,7 +84,7 @@ The manual workflow `.github/workflows/allin1-cpu-no-demix-benchmark.yml` builds
 
 ## Cloud Run Jobs Proof
 
-`cloud_run_job.py` is a thin Cloud Run wrapper around the local analyzer. It reads Cloud Storage URIs from environment variables, downloads the input to `/tmp`, runs `analyze_no_demix.py`, uploads the normalized JSON, and exits.
+`cloud_run_job.py` is a Cloud Run wrapper around the local analyzer. It can run one track from env vars or a batch of tracks from a manifest. In batch mode it downloads each track, loads the all-in-one model once, analyzes tracks sequentially, uploads one normalized JSON per track, writes optional timings, and exits.
 
 Required environment variables:
 
@@ -99,6 +99,31 @@ Optional:
 TIMINGS_OUTPUT_URI=gs://sc-automix-analysis-dev-sc-automix/output/In-Search-Of-Sunset-126bpm-1000-Handz.timings.jsonl
 ALLIN1_MODEL=harmonix-all
 ```
+
+Batch mode uses:
+
+```text
+MANIFEST_URI=gs://sc-automix-analysis-dev-sc-automix/manifests/playlist-analysis-test.json
+SUMMARY_OUTPUT_URI=gs://sc-automix-analysis-dev-sc-automix/output/playlist-analysis-test.summary.json
+```
+
+Manifest shape:
+
+```json
+{
+  "playlist_analysis_id": "playlist-analysis-test",
+  "tracks": [
+    {
+      "track_id": "in-search-of-sunset",
+      "input_uri": "gs://sc-automix-analysis-dev-sc-automix/input/In-Search-Of-Sunset-126bpm-1000-Handz.mp3",
+      "output_uri": "gs://sc-automix-analysis-dev-sc-automix/output/In-Search-Of-Sunset-126bpm-1000-Handz.json",
+      "timings_output_uri": "gs://sc-automix-analysis-dev-sc-automix/output/In-Search-Of-Sunset-126bpm-1000-Handz.timings.jsonl"
+    }
+  ]
+}
+```
+
+Sequential mode processes every track in the manifest. Later parallel mode can use Cloud Run Jobs `--tasks` and `--parallelism`; the wrapper already shards by `CLOUD_RUN_TASK_INDEX` and `CLOUD_RUN_TASK_COUNT`.
 
 After changing the wrapper or Dockerfile, rebuild and push the `linux/amd64` image to Google Artifact Registry:
 
@@ -138,4 +163,35 @@ gcloud run jobs execute allin1-cpu-no-demix \
   --project sc-automix \
   --region us-east1 \
   --wait
+```
+
+To switch the existing job to batch-manifest mode:
+
+```bash
+gcloud run jobs update allin1-cpu-no-demix \
+  --project sc-automix \
+  --region us-east1 \
+  --set-env-vars MANIFEST_URI=gs://sc-automix-analysis-dev-sc-automix/manifests/playlist-analysis-test.json,SUMMARY_OUTPUT_URI=gs://sc-automix-analysis-dev-sc-automix/output/playlist-analysis-test.summary.json \
+  --remove-env-vars INPUT_URI,OUTPUT_URI,TIMINGS_OUTPUT_URI
+```
+
+Upload a manifest:
+
+```bash
+cat >/tmp/playlist-analysis-test.json <<'JSON'
+{
+  "playlist_analysis_id": "playlist-analysis-test",
+  "tracks": [
+    {
+      "track_id": "in-search-of-sunset",
+      "input_uri": "gs://sc-automix-analysis-dev-sc-automix/input/In-Search-Of-Sunset-126bpm-1000-Handz.mp3",
+      "output_uri": "gs://sc-automix-analysis-dev-sc-automix/output/In-Search-Of-Sunset-126bpm-1000-Handz.json",
+      "timings_output_uri": "gs://sc-automix-analysis-dev-sc-automix/output/In-Search-Of-Sunset-126bpm-1000-Handz.timings.jsonl"
+    }
+  ]
+}
+JSON
+
+gcloud storage cp /tmp/playlist-analysis-test.json \
+  gs://sc-automix-analysis-dev-sc-automix/manifests/playlist-analysis-test.json
 ```
