@@ -81,3 +81,61 @@ If this pin set fails, allow exactly one dependency retry based on the observed 
 ## GitHub Actions
 
 The manual workflow `.github/workflows/allin1-cpu-no-demix-benchmark.yml` builds the Docker image, runs cold and warm analysis on the committed long MP3 fixture, validates the normalized JSON against the analysis contract, checks BPM near `130`, checks warm runtime, and uploads the JSON/timing files as artifacts.
+
+## Cloud Run Jobs Proof
+
+`cloud_run_job.py` is a thin Cloud Run wrapper around the local analyzer. It reads Cloud Storage URIs from environment variables, downloads the input to `/tmp`, runs `analyze_no_demix.py`, uploads the normalized JSON, and exits.
+
+Required environment variables:
+
+```text
+INPUT_URI=gs://sc-automix-analysis-dev-sc-automix/input/In-Search-Of-Sunset-126bpm-1000-Handz.mp3
+OUTPUT_URI=gs://sc-automix-analysis-dev-sc-automix/output/In-Search-Of-Sunset-126bpm-1000-Handz.json
+```
+
+Optional:
+
+```text
+TIMINGS_OUTPUT_URI=gs://sc-automix-analysis-dev-sc-automix/output/In-Search-Of-Sunset-126bpm-1000-Handz.timings.jsonl
+ALLIN1_MODEL=harmonix-all
+```
+
+After changing the wrapper or Dockerfile, rebuild and push the `linux/amd64` image to Google Artifact Registry:
+
+```bash
+export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"
+
+docker build --platform linux/amd64 \
+  -t us-east1-docker.pkg.dev/sc-automix/sc-automix/allin1-cpu-no-demix:latest \
+  spikes/allin1-docker-cpu-no-demix
+
+docker push us-east1-docker.pkg.dev/sc-automix/sc-automix/allin1-cpu-no-demix:latest
+```
+
+Create the first Cloud Run Job:
+
+```bash
+gcloud run jobs create allin1-cpu-no-demix \
+  --project sc-automix \
+  --region us-east1 \
+  --image us-east1-docker.pkg.dev/sc-automix/sc-automix/allin1-cpu-no-demix:latest \
+  --command python \
+  --args /app/cloud_run_job.py \
+  --cpu 4 \
+  --memory 8Gi \
+  --task-timeout 10m \
+  --max-retries 0 \
+  --tasks 1 \
+  --parallelism 1 \
+  --service-account sc-automix-analysis-runner@sc-automix.iam.gserviceaccount.com \
+  --set-env-vars INPUT_URI=gs://sc-automix-analysis-dev-sc-automix/input/In-Search-Of-Sunset-126bpm-1000-Handz.mp3,OUTPUT_URI=gs://sc-automix-analysis-dev-sc-automix/output/In-Search-Of-Sunset-126bpm-1000-Handz.json,TIMINGS_OUTPUT_URI=gs://sc-automix-analysis-dev-sc-automix/output/In-Search-Of-Sunset-126bpm-1000-Handz.timings.jsonl
+```
+
+Run it:
+
+```bash
+gcloud run jobs execute allin1-cpu-no-demix \
+  --project sc-automix \
+  --region us-east1 \
+  --wait
+```

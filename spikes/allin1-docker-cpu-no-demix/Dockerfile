@@ -35,7 +35,9 @@ RUN python -m pip install allin1==1.1.0
 RUN python -m pip install --force-reinstall --index-url https://download.pytorch.org/whl/cpu torch==2.2.2 torchaudio==2.2.2
 RUN python -m pip install --force-reinstall numpy==1.26.4 scipy==1.13.1 soundfile==0.12.1 jsonschema==4.23.0
 RUN python -m pip install --no-build-isolation --no-binary=:all: natten==0.14.6
+RUN python -m pip install google-cloud-storage==2.19.0
 
 COPY analyze_no_demix.py /app/analyze_no_demix.py
+COPY cloud_run_job.py /app/cloud_run_job.py
 
 ENTRYPOINT ["python", "/app/analyze_no_demix.py"]
